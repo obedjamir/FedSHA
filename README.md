@@ -1,138 +1,164 @@
-# FedSHA
+# FedSHA: Federated Medical Image Segmentation under Anatomy and Modality Heterogeneity via Hierarchical Adapters
 
-Federated segmentation across organs and modalities with a shared adapter grid on a frozen MedSAM encoder.
+This repository provides the official implementation of **FedSHA**, a federated learning framework for medical image segmentation where clients differ in both **anatomy** (organ) and **imaging modality** (CT, MRI).
 
-Each client holds one organ in one modality (CT or MRI). All clients share one 4×4 grid of adapters. In every encoder block a gate picks the top-4 adapters inside a sliding window. The window starts at the grid centre in the early blocks, which all clients share, and slides to the client's own organ region in the last blocks. The server averages each adapter with weights from how much the clients' gates actually used it.
+FedSHA shares one grid of adapters on a frozen MedSAM encoder. In every block a gate picks the top-k adapters inside a sliding window that moves from a shared region in the early blocks to an organ-specific region in the last blocks. The server aggregates each adapter with weights from the clients' gates.
 
-## Method
+The framework supports segmentation experiments on six clients (liver, kidney, spleen, brain; CT and MRI) and enables fair comparison with several federated learning baselines.
 
-- **Backbone.** MedSAM ViT-B. The image encoder is frozen. The adapters, gates, scale/shift (γ, β) and the mask decoder are trained.
-- **Adapter grid.** One shared 4×4 grid, used by all 12 blocks. The server sorts the organ names and gives organ *i* the 2×2 region *i*.
-- **Sliding window.** The window centre moves from the grid centre μ₀ to the organ centre μₒ:
-  μ_l = (1 − τ) μ₀ + τ μₒ, with τ = (l − 1)/(L − 1).
-  An adapter is in the window if the window covers at least 1/3 of it on each axis. Blocks 1–4 use the centre region, blocks 5–8 a 3×3 window and blocks 9–12 the organ region.
-- **Gate.** Per block and branch (attention, MLP), a top-4 softmax gate over the adapters in the window, followed by a per-block scale and shift.
-- **Gate-informed aggregation.**
-  - Adapter *e* is averaged over the clients with weights equal to its gate mass. Gate mass is the mean gate probability over tokens and blocks, and it is 0 outside the window.
-  - Gate rows use the same weights as their adapters.
-  - γ/β and the mask decoder are averaged over all clients with weights n_c (training volumes).
-  - Mask tokens stay local.
-- **FedSHA-P.** Each client fine-tunes the FedSHA model on its own data for 10 epochs and keeps its best validation epoch.
+---
 
-## Results
+## Dataset Preparation
 
-Test Dice (%) on the six-client federation. The higher score in each pair is in bold.
+The `dataset/` directory contains the script that generates the client-wise data splits (train / val / test by patient).
 
-| Method | LiTS17 (CT) | DLDS (MRI) | KiTS23 (CT) | AMOS22 (MRI) | BraTS (MRI) | BHSD (CT) | Mean |
-|---|---|---|---|---|---|---|---|
-| FedSHA | 93.52 | 92.24 | 90.26 | 93.48 | 85.66 | 45.74 | 83.48 |
-| FedSHA-P | 94.65 | 92.32 | 91.82 | 94.03 | 86.45 | 48.47 | 84.63 |
+### Clients
 
-The baselines are FedMSA (FedAvg), FedProx, MOON, Fed-MENU, FedMoSA, Ditto, FedRep, FedHCA2, FedALA, FedDBE, MSA-local and MSA-central. They all use the same backbone and training budget. The full comparison and the Wilcoxon tests are in the paper.
+| Client | Dataset | Modality | Organ  |
+|--------|---------|----------|--------|
+| 0      | LiTS17  | CT       | liver  |
+| 1      | DLDS    | MRI      | liver  |
+| 2      | KiTS23  | CT       | kidney |
+| 3      | AMOS22  | MRI      | spleen |
+| 4      | BraTS   | MRI      | brain  |
+| 5      | BHSD    | CT       | brain  |
 
-Ablations (mean test Dice):
+### Generating the Dataset
 
-| Variant | Mean |
-|---|---|
-| FedSHA | 83.48 |
-| w/o gate-informed aggregation | 82.91 |
-| organ region in all blocks | 83.00 |
-| w/o window | 65.42 |
-
-## Repository layout
-
-```
-system/
-├── main.py                  # entry point (arguments, model and server)
-├── run.sh                   # all runs, tests and helpers
-├── flcore/
-│   ├── trainmodel/models.py # FedSHA, SlidingWindow, baseline networks
-│   ├── clients/             # clientseg (shared training / evaluation), clientFedSHA, baselines
-│   └── servers/             # serverFedSHA, serverbase, baselines
-├── utils/data_utils.py      # client splits and per-epoch slice sampling
-├── wilcoxon.py              # paired Wilcoxon tests on per-case Dice
-├── ablation_figs.py         # ablation figure
-├── qualitative_fig.py       # qualitative figure
-└── comm_cost.py             # parameters sent per client
-```
-
-## Setup
+From the `dataset/` directory, run:
 
 ```bash
-pip install torch torchvision numpy scipy h5py matplotlib pillow
-pip install git+https://github.com/facebookresearch/segment-anything.git
+python3 generate_modorgan.py
 ```
+
+The data is written to `dataset/modorgan6/{train,val,test}0/<client>.npz`.
 
 Download the MedSAM ViT-B checkpoint `medsam_vit_b.pth` from the [MedSAM repository](https://github.com/bowang-lab/MedSAM) and place it in `system/`.
 
-### Data
+---
 
-Clients are read from `dataset/modorgan6/{train,val,test}0/<client>.npz`. Each file lists the slice PNGs and their masks, plus a `meta` entry with the modality, organ and segmentation regions. Splits are by patient.
+## Running Experiments
 
-| Client | Dataset | Modality | Organ |
-|---|---|---|---|
-| 0 | LiTS17 | CT | liver |
-| 1 | DLDS | MRI | liver |
-| 2 | KiTS23 | CT | kidney |
-| 3 | AMOS22 | MRI | spleen |
-| 4 | BraTS | MRI | brain |
-| 5 | BHSD | CT | brain |
+All federated learning experiments are executed from the `system/` directory using the provided shell script.
 
-## Usage
+### Main Components
 
-Run from `system/`. Each run writes `logs_mo/<run>.log`, its checkpoints to `../checkpoints/` and its results to `../results/`.
+- `main.py` — Core federated learning training entry point
+- `run.sh` — Script to launch experiments and tests
+- `system/flcore/trainmodel/` — FedSHA and baseline networks
+- `system/flcore/clients/`, `system/flcore/servers/` — Client and server implementations of all methods
+- `system/utils/` — Helper utilities
+- `wilcoxon.py`, `ablation_figs.py`, `qualitative_fig.py`, `comm_cost.py` — Statistical tests and figures
 
-```bash
-./run.sh fedsha 0              # FedSHA on GPU 0
-./run.sh ft 0                  # FedSHA-P (fine-tunes the fedsha run; FT_FROM=<run> to change)
-
-./run.sh no_window 0           # ablations
-./run.sh no_gate 1
-./run.sh organ_only 1
-
-./run.sh baselines "0 1 2"     # global baselines, two runs per GPU
-./run.sh personal "0 1 2"      # personalized baselines
-./run.sh list                  # all run names
-
-./run.sh test_all 0            # test the best checkpoints of all runs -> logs_mo/test_all.log
-./run.sh dump_all 0            # save predictions for the qualitative figure
-python3 wilcoxon.py            # Wilcoxon tests (needs test_all first)
-python3 ablation_figs.py
-```
-
-Main FedSHA options in `main.py`:
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--grid` | 4 | adapter grid size (G×G) |
-| `--top_k` | 4 | adapters per token |
-| `--win_overlap` | 1/3 | coverage needed for an adapter to be in the window |
-| `--hard_window` | 1 | 0 = no window, top-k over the whole grid |
-| `--win_stages` | sliding | `s1,s2` for fixed windows (`0,12` = organ region in all blocks) |
-| `--expert_agg` | gate | `gate`, `window` (n_c over clients with the adapter in their window) or `fedavg` |
-| `--ft_from`, `--ft_epochs` | –, 10 | FedSHA-P |
-
-Training settings (the same for every method): 25 rounds, 2 local epochs of 2,500 slices, batch 16, 512×512 input, early stopping with patience 5 after round 10.
-
-### Checkpoints from the older code
-
-Checkpoints from the earlier version of this code use the model name `atmoe` and the run names `gate_eq`, `no_usage_proto` and `feddbe_alt`. Run this once to rename them:
+### Running Experiments
 
 ```bash
-./run.sh migrate
+cd system
+./run.sh <run> <gpu>
 ```
 
-## Citation
+Example:
 
-```bibtex
-@inproceedings{fedsha,
-  title     = {FedSHA: ...},
-  author    = {...},
-  booktitle = {IEEE International Symposium on Biomedical Imaging (ISBI)},
-  year      = {2026}
-}
+```bash
+./run.sh fedsha 0
 ```
 
-## Acknowledgements
+Hyperparameters for each method can be adjusted directly inside `run.sh`. Use `./run.sh list` to see all runs.
 
-Built on [Segment Anything](https://github.com/facebookresearch/segment-anything), [MedSAM](https://github.com/bowang-lab/MedSAM) and [PFLlib](https://github.com/TsingZ0/PFLlib).
+---
+
+## Example Commands
+
+### FedSHA (proposed)
+
+```bash
+nohup python3 main.py \
+  -algo FedSHA \
+  --arch fedsha \
+  -mn fedsha \
+  -data modorgan6 \
+  -nc 6 \
+  -gr 25 \
+  -lbs 16 \
+  -spe 2500 \
+  --sam_ckpt ./medsam_vit_b.pth \
+  -go fedsha \
+  -gpu 0 \
+  > logs_mo/fedsha.log 2>&1 &
+```
+
+### FedSHA-P (personalized)
+
+Fine-tunes the trained FedSHA model on each client for 10 epochs.
+
+```bash
+nohup python3 main.py \
+  -algo FedSHA \
+  --arch fedsha \
+  -mn fedsha \
+  -data modorgan6 \
+  -nc 6 \
+  -lbs 16 \
+  -spe 2500 \
+  --sam_ckpt ./medsam_vit_b.pth \
+  --ft_from fedsha \
+  --ft_epochs 10 \
+  --select client \
+  -go ft \
+  -gpu 0 \
+  > logs_mo/ft.log 2>&1 &
+```
+
+### Testing
+
+```bash
+./run.sh test_all 0          # test the best checkpoints of all runs
+python3 wilcoxon.py          # Wilcoxon signed-rank tests on per-case Dice
+```
+
+---
+
+## Key Arguments
+
+| Argument        | Description |
+|-----------------|-------------|
+| `-algo`         | Federated algorithm name (e.g., `FedSHA`, `FedMSA`, `FedMoSA`) |
+| `--arch`        | Method / architecture (e.g., `fedsha`, `fedavg`, `fedmosa`, `fedmenu`) |
+| `-mn`           | Model name (checkpoint prefix) |
+| `-nc`           | Number of clients |
+| `-data`         | Dataset to use (`modorgan6`) |
+| `-gr`           | Number of global rounds |
+| `-spe`          | Training slices per local epoch |
+| `--grid`        | Adapter grid size (default 4, i.e. 4×4) |
+| `--top_k`       | Adapters selected per token (default 4) |
+| `--hard_window` | 0 = no sliding window (ablation) |
+| `--win_stages`  | Fixed windows instead of the sliding window (`0,12` = organ region in all blocks) |
+| `--expert_agg`  | Adapter aggregation: `gate` (default), `window`, `fedavg` |
+| `--ft_from`     | FedSHA-P: fine-tune the FedSHA model of this run |
+
+---
+
+## Supported Methods
+
+- **FedSHA** (proposed) — Shared adapter grid with sliding window and gate-informed aggregation
+- **FedSHA-P** (proposed) — Personalized FedSHA with local fine-tuning
+- **MSA-local / MSA-central** — Medical SAM adapter trained locally or on pooled data
+- **FedMSA** — Federated learning with medical SAM adapter
+- **FedProx**, **MOON** — Global federated baselines
+- **Fed-MENU** — Federated multi-encoder network
+- **FedMoSA** — Federated learning with specialized and shared adapters
+- **Ditto**, **FedRep**, **FedHCA2**, **FedALA**, **FedDBE** — Personalized federated baselines
+
+---
+
+## Results
+
+Experiment outputs are saved to the `results/` directory and checkpoints to `checkpoints/`. Training logs are written to `.log` files in `system/logs_mo/` for later inspection.
+
+---
+
+## Notes
+
+- Experiments are executed asynchronously using `nohup`.
+- Training logs are saved to `.log` files (e.g., `logs_mo/fedsha.log`).
+- GPU selection is controlled via the `gpu` argument of `run.sh` (or `-gpu` in `main.py`).
