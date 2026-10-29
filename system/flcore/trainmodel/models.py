@@ -144,14 +144,16 @@ class SlidingWindow:
     2 x 2 of the grid (one adapter of each surrounding region). In block l (1..L) the 2 x 2 window is centred at
         mu_l = (1 - tau_l) mu_0 + tau_l mu_o,   tau_l = (l - 1) / (L - 1),
     from the grid centre (block 1) to the organ region (block L). An adapter is in the window if the window covers
-    at least a fraction `overlap` (epsilon) of it along each axis.
+    at least a fraction `overlap` (epsilon) of it along each axis. `side` = window side length in cells (default 2;
+    a smaller window, e.g. 1.5, stays centred at mu_l; if fewer than 4 adapters pass epsilon, every touched one is kept).
     G = 4, L = 12, epsilon = 1/3: blocks 1-4 centre region (4 adapters), 5-8 a 3 x 3 block (9), 9-12 organ region (4).
     stages = (s1, s2) (ablation): fixed windows, blocks 1..s1 the centre region, s1+1..L the organ region
     (e.g. (0, 12) = organ region in every block)."""
-    def __init__(self, grid, n_layers, stages=None, overlap=1/3):
+    def __init__(self, grid, n_layers, stages=None, overlap=1/3, side=2.0):
         assert grid % 2 == 0, "the grid needs an even size (2 x 2 organ regions)"
         self.G, self.M, self.L = grid, grid * grid, n_layers
         self.overlap = float(overlap)
+        self.side = float(side)
         self.stages = None if stages is None else (int(stages[0]), int(stages[1]))
         self.n_regions = (grid // 2) ** 2                                      # organs the grid can hold
         self.c0 = (grid // 2 - 1, grid // 2 - 1)                               # top-left of the centre region
@@ -160,16 +162,22 @@ class SlidingWindow:
         br, bc = divmod(int(organ), self.G // 2)
         return 2 * br, 2 * bc
 
-    def _covered(self, top, left):
-        """Adapters covered by a 2 x 2 window with top-left corner at (top, left) (possibly fractional)."""
+    def _covered(self, top, left, eps=None):
+        """Adapters covered by the window centred on the 2 x 2 region with top-left corner (top, left) (possibly
+        fractional); the window has side `side`."""
+        eps = self.overlap if eps is None else eps
         def axis(a):
+            lo = a + 1 - self.side / 2                                  # window [lo, lo + side) along this axis
             out = []
             for r in range(self.G):
-                ov = min(r + 1, a + 2) - max(r, a)                      # overlap of cell [r, r+1) with [a, a+2)
-                if ov > 1e-9 and ov >= self.overlap - 1e-9:
+                ov = min(r + 1, lo + self.side) - max(r, lo)            # overlap of cell [r, r+1) with the window
+                if ov > 1e-9 and ov >= eps - 1e-9:
                     out.append(r)
             return out
-        return [r * self.G + c for r in axis(top) for c in axis(left)]
+        cells = [r * self.G + c for r in axis(top) for c in axis(left)]
+        if len(cells) < 4 and eps > 0:                                  # small window between cells: keep all touched
+            return self._covered(top, left, 0.0)
+        return cells
 
     def __call__(self, organ):
         """(L, M) bool: the adapters in the window of each block."""
@@ -554,7 +562,7 @@ class MENUModel(SegModel):
 class FedSHA(SegModel):
     """Ours: shared adapter grid with a depth-dependent sliding window and gated top-k mixture.
     hard_window=False (ablation): no window, the gate chooses the top-k of the whole grid in every block."""
-    def __init__(self, checkpoint_path="./medsam_vit_b.pth", grid=4, top_k=4, win_stages=None, win_overlap=1/3,
+    def __init__(self, checkpoint_path="./medsam_vit_b.pth", grid=4, top_k=4, win_stages=None, win_overlap=1/3, win_side=2.0,
                  hard_window=True, adapter_reduction=16, img_size=512, use_checkpoint=False,
                  grad_through_frozen=False, **unused):
         super().__init__()
@@ -567,7 +575,7 @@ class FedSHA(SegModel):
         for i, blk in enumerate(enc.blocks):
             enc.blocks[i] = FedSHABlock(blk, hidden, self.M, top_k, use_checkpoint, grad_through_frozen)
         self.n_layers = len(enc.blocks)
-        self.window_generator = SlidingWindow(grid, self.n_layers, win_stages, win_overlap)
+        self.window_generator = SlidingWindow(grid, self.n_layers, win_stages, win_overlap, win_side)
         self.register_buffer("anatomy_mask", None)           # (L, M) bool windows, set by set_organ()
         self.placed = False
         self._routing = []
