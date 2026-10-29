@@ -56,7 +56,7 @@ def run(args):
         else:                                           # FedSHA (ours)
             stages = tuple(int(v) for v in args.win_stages.split(',')) if args.win_stages else None
             args.model = FedSHA(checkpoint_path=args.sam_ckpt, grid=args.grid, top_k=args.top_k, win_stages=stages,
-                                win_overlap=args.win_overlap, hard_window=bool(args.hard_window),
+                                win_overlap=args.win_overlap, win_side=args.win_side, hard_window=bool(args.hard_window),
                                 img_size=args.img_size, use_checkpoint=bool(args.use_checkpoint)).to(args.device)
         servers = {"fedsha": FedSHAServer, "local": FedLocal, "central": FedCentral, "fedavg": FedAvgSeg, "fedprox": FedAvgSeg, "ditto": FedAvgSeg, "fedrep": FedAvgSeg, "moon": FedAvgSeg, "fedala": FedAvgSeg, "feddbe": FedAvgSeg, "fedhca2": FedHCA2,
                    "fedmosa": FedMoSA, "fedmenu": FedMENU}
@@ -118,6 +118,8 @@ def get_args():
                    help="s1,s2: fixed windows instead of the sliding window (0,12 = organ region in every block)")
     p.add_argument("--win_overlap", type=float, default=1/3,
                    help="An adapter is in the window if the window covers >= this fraction of it per axis")
+    p.add_argument("--win_side", type=float, default=2.0,
+                   help="Side length of the sliding window in adapters (2 = the 2 x 2 window; e.g. 1.5 = smaller)")
     p.add_argument("--hard_window", type=int, default=1, help="0 = no window, top-k of the whole grid (ablation)")
     p.add_argument("--expert_agg", type=str, default="gate", choices=["gate", "window", "fedavg"],
                    help="gate: gate mass | window: n_c over the clients with e in their window | fedavg: n_c over all")
