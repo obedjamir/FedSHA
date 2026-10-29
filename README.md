@@ -133,6 +133,7 @@ python3 wilcoxon.py          # Wilcoxon signed-rank tests on per-case Dice
 | `--top_k`       | Adapters selected per token (default 4) |
 | `--hard_window` | 0 = no sliding window (ablation) |
 | `--win_stages`  | Fixed windows instead of the sliding window (`0,12` = organ region in all blocks) |
+| `--win_side`    | Side length of the sliding window in adapters (default 2; e.g. `1.5` = smaller window) |
 | `--expert_agg`  | Adapter aggregation: `gate` (default), `window`, `fedavg` |
 | `--ft_from`     | FedSHA-P: fine-tune the FedSHA model of this run |
 
